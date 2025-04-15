@@ -181,11 +181,11 @@ class EXP(plugins.Plugin):
         ui.add_element('Lv', LabeledValue(color=BLACK, label='lvl', value=0,
                                           position=(int(self.options["lvl_x_coord"]),
                                                     int(self.options["lvl_y_coord"])),
-                                          label_font=fonts.Bold, text_font=fonts.Medium))
+                                          label_font=fonts.Small, text_font=fonts.Small))
         ui.add_element('Exp', LabeledValue(color=BLACK, label='XP', value=0,
                                            position=(int(self.options["exp_x_coord"]),
                                                      int(self.options["exp_y_coord"])),
-                                           label_font=fonts.Bold, text_font=fonts.Medium))
+                                           label_font=fonts.Small, text_font=fonts.Small))
 
     def on_ui_update(self, ui):
         self.expneeded=self.calcExpNeeded(self.lv)
