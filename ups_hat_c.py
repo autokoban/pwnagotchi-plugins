@@ -1,178 +1,156 @@
-# functions for get UPS status - needs enable "i2c" in raspi-config, smbus installed (sudo apt-get install -y python-smbus)
+# This is a customized version of the builtin Pwnagotchi Memtemp plugin which
+# includes the changes from https://github.com/evilsocket/pwnagotchi/pull/918
+# but tweaked further to better fit my specific requirements.
+#
+# Author: https://github.com/xenDE
+# Contributors: spees <speeskonijn@gmail.com>, crahan@n00.be
 
+#Edits by discord@rai68 - allows all 4 status - tested only on wave 2.13 v3
 
 import logging
-import time
-
 import pwnagotchi
 import pwnagotchi.plugins as plugins
 import pwnagotchi.ui.fonts as fonts
-from pwnagotchi.ui.components import LabeledValue
+from pwnagotchi.ui.components import LabeledValue, Text
 from pwnagotchi.ui.view import BLACK
 
-# Config Register (R/W)
-_REG_CONFIG = 0x00
-# SHUNT VOLTAGE REGISTER (R)
-_REG_SHUNTVOLTAGE = 0x01
 
-# BUS VOLTAGE REGISTER (R)
-_REG_BUSVOLTAGE = 0x02
+class MemTempPlus(plugins.Plugin):
+    __author__ = 'https://github.com/xenDE'
+    __version__ = '1.0.3'
+    __license__ = 'GPL3'
+    __description__ = 'A plugin that will display memory/cpu usage and temperature'
 
-# POWER REGISTER (R)
-_REG_POWER = 0x03
-
-# CURRENT REGISTER (R)
-_REG_CURRENT = 0x04
-
-# CALIBRATION REGISTER (R/W)
-_REG_CALIBRATION = 0x05
-
-
-class UPS:
-    def __init__(self):
-        # only import when the module is loaded and enabled
-        import smbus
-
-        self._bus = smbus.SMBus(1)
-        self._addr = 0x43
-
-        # Set chip to known config values to start
-        self._cal_value = 0
-        self._current_lsb = 0
-        self._power_lsb = 0
-        self.set_calibration_32V_2A()
-
-    def read(self, address):
-        data = self._bus.read_i2c_block_data(self._addr, address, 2)
-        return (data[0] * 256) + data[1]
-
-    def write(self, address, data):
-        temp = [0, 0]
-        temp[1] = data & 0xFF
-        temp[0] = (data & 0xFF00) >> 8
-        self._bus.write_i2c_block_data(self._addr, address, temp)
-
-    def set_calibration_32V_2A(self):
-        """Configures to INA219 to be able to measure up to 32V and 2A of current. Counter
-        overflow occurs at 3.2A.
-        ..note :: These calculations assume a 0.1 shunt ohm resistor is present
-        """
-
-        self._cal_value = 0
-        self._current_lsb = 1  # Current LSB = 100uA per bit
-        self._cal_value = 4096
-        self._power_lsb = 0.002  # Power LSB = 2mW per bit
-
-        # Set Calibration register to 'Cal' calculated above
-        self.write(_REG_CALIBRATION, self._cal_value)
-
-        # Set Config register to take into account the settings above
-        self.bus_voltage_range = 0x01
-        self.gain = 0x03
-        self.bus_adc_resolution = 0x0D
-        self.shunt_adc_resolution = 0x0D
-        self.mode = 0x07
-        self.config = (
-            self.bus_voltage_range << 13
-            | self.gain << 11
-            | self.bus_adc_resolution << 7
-            | self.shunt_adc_resolution << 3
-            | self.mode
-        )
-        self.write(_REG_CONFIG, self.config)
-
-    def getBusVoltage_V(self):
-        self.write(_REG_CALIBRATION, self._cal_value)
-        self.read(_REG_BUSVOLTAGE)
-        return (self.read(_REG_BUSVOLTAGE) >> 3) * 0.004
-
-    def getCurrent_mA(self):
-        value = self.read(_REG_CURRENT)
-        if value > 32767:
-            value -= 65535
-        if (value * self._current_lsb) < 0:
-            return ""
-        else:
-            return "+"
-
-
-class UPSC(plugins.Plugin):
-    __GitHub__ = ""
-    __author__ = "(edited by: itsdarklikehell bauke.molenaar@gmail.com), HannaDiamond"
-    __version__ = "1.0.1"
-    __license__ = "MIT"
-    __description__ = "A plugin that will add a battery capacity and charging indicator for the UPS HAT C."
-    __name__ = "UPSC"
-    __help__ = "A plugin that will add a battery capacity and charging indicator for the UPS HAT C."
-    __dependencies__ = {
-        "pip": ["scapy"],
+    ALLOWED_FIELDS = {
+        'mem': 'mem_usage',
+        'cpu': 'cpu_load',
+        'temp': 'cpu_temp',
+        'freq': 'cpu_freq',
     }
-    __defaults__ = {
-        "enabled": False,
-    }
+    DEFAULT_FIELDS = ['mem', 'cpu', 'temp', 'freq']  # enables 4 by default
+    LINE_SPACING = 12
+    LABEL_SPACING = 0
+    FIELD_WIDTH = 4
 
     def __init__(self):
-        self.ups = None
+        self.options = dict()
 
     def on_loaded(self):
-        self.ups = UPS()
+        logging.info('memtemp plugin loaded.')
+
+    def mem_usage(self):
+        return f'{int(pwnagotchi.mem_usage() * 100)}%'
+
+    def cpu_load(self):
+        return f'{int(pwnagotchi.cpu_load() * 100)}%'
+
+    def cpu_temp(self):
+        if self.options['scale'].lower() == 'fahrenheit':
+            temp = (pwnagotchi.temperature() * 9 / 5) + 32
+            symbol = 'F'
+        elif self.options['scale'].lower() == 'kelvin':
+            temp = pwnagotchi.temperature() + 273.15
+            symbol = 'K'
+        else:
+            # default to celsius
+            temp = pwnagotchi.temperature()
+            symbol = 'C'
+        return f'{temp}{symbol}'
+
+    def cpu_freq(self):
+        with open('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq', 'rt') as fp:
+            return f'{round(float(fp.readline()) / 1000000, 1)}G'
+
+    def pad_text(self, data):
+        return ' ' * (self.FIELD_WIDTH - len(data)) + data
 
     def on_ui_setup(self, ui):
-        if self.options["label_on"]:
-            ui.add_element(
-                "ups",
-                LabeledValue(
-                    color=BLACK,
-                    label="BAT",
-                    value="--%",
-                    position=(
-                        int(self.options["bat_x_coord"]),
-                        int(self.options["bat_y_coord"]),
-                    ),
-                    label_font=fonts.Bold,
-                    text_font=fonts.Medium,
-                ),
-            )
+        try:
+            # Configure field list
+            self.fields = self.options['fields'].split(',')
+            self.fields = [x.strip() for x in self.fields if x.strip() in self.ALLOWED_FIELDS.keys()]
+            self.fields = self.fields[:4]  # CHANGED to limit to the first 4 fields
+        except Exception:
+            # Set default value
+            self.fields = self.DEFAULT_FIELDS
+
+        try:
+            # Configure line_spacing
+            line_spacing = int(self.options['linespacing'])
+        except Exception:
+            # Set default value
+            line_spacing = self.LINE_SPACING
+
+        try:
+            # Configure position
+            pos = self.options['position'].split(',')
+            pos = [int(x.strip()) for x in pos]
+            v_pos = (pos[0], pos[1])
+            h_pos = v_pos
+        except Exception:
+            # Set position based on screen type
+            if ui.is_waveshare_v2() or ui.is_waveshare_v3():
+                v_pos = (197, 70)
+                h_pos = (175, 85)
+            else:
+                v_pos = (175, 50)
+                h_pos = (155, 60)
+
+        if self.options['orientation'] == 'vertical':
+            # Dynamically create the required LabeledValue objects
+            for idx, field in enumerate(self.fields):
+                v_pos_x = v_pos[0]
+                v_pos_y = v_pos[1] + ((len(self.fields) - 3) * -1 * line_spacing)
+                ui.add_element(
+                    f'memtemp_{field}',
+                    LabeledValue(
+                        color=BLACK,
+                        label=f'{self.pad_text(field)}:',
+                        value='-',
+                        position=(v_pos_x, v_pos_y + (idx * line_spacing)),
+                        label_font=fonts.Small,
+                        text_font=fonts.Small,
+                        label_spacing=self.LABEL_SPACING,
+                    )
+                )
         else:
+            # default to horizontal
+            h_pos_x = h_pos[0] + ((len(self.fields) - 3) * -1 * 25)
+            h_pos_y = h_pos[1]
             ui.add_element(
-                "ups",
-                LabeledValue(
+                'memtemp_header',
+                Text(
                     color=BLACK,
-                    label="",
-                    value="--%",
-                    position=(
-                        int(self.options["bat_x_coord"]),
-                        int(self.options["bat_y_coord"]),
-                    ),
-                    label_font=fonts.Bold,
-                    text_font=fonts.Medium,
-                ),
+                    value=' '.join([self.pad_text(x) for x in self.fields]),
+                    position=(h_pos_x, h_pos_y),
+                    font=fonts.Small,
+                )
+            )
+            ui.add_element(
+                'memtemp_data',
+                Text(
+                    color=BLACK,
+                    value=' '.join([self.pad_text('-') for x in self.fields]),
+                    position=(h_pos_x, h_pos_y + line_spacing),
+                    font=fonts.Small,
+                )
             )
 
     def on_unload(self, ui):
         with ui._lock:
-            ui.remove_element("ups")
+            if self.options['orientation'] == 'vertical':
+                for idx, field in enumerate(self.fields):
+                    ui.remove_element(f'memtemp_{field}')
+            else:
+                # default to horizontal
+                ui.remove_element('memtemp_header')
+                ui.remove_element('memtemp_data')
 
     def on_ui_update(self, ui):
-        bus_voltage = self.ups.getBusVoltage_V()
-        capacity = int((bus_voltage - 3) / 1.2 * 100)
-        if capacity > 100:
-            capacity = 100
-        if capacity < 0:
-            capacity = 0
-
-        charging = self.ups.getCurrent_mA()
-        ui.set("ups", str(capacity) + "%" + charging)
-
-        if capacity <= self.options["shutdown"]:
-            logging.info(
-                "[ups_hat_c] Empty battery (<= %s%%): shutting down"
-                % self.options["shutdown"]
-            )
-            ui.update(force=True, new_data={
-                      "status": "Battery exhausted, bye ..."})
-            time.sleep(3)
-            pwnagotchi.shutdown()
-
-    def on_webhook(self, path, request):
-        logging.info(f"[{self.__class__.__name__}] webhook pressed")
+        if self.options['orientation'] == 'vertical':
+            for idx, field in enumerate(self.fields):
+                ui.set(f'memtemp_{field}', getattr(self, self.ALLOWED_FIELDS[field])())
+        else:
+            # default to horizontal
+            data = ' '.join([self.pad_text(getattr(self, self.ALLOWED_FIELDS[x])()) for x in self.fields])
+            ui.set('memtemp_data', data)
